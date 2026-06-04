@@ -175,3 +175,34 @@ def add_insurance(req: InsuranceRequest, session: Session = Depends(get_session)
 def list_insurance(whatsapp_id: str, session: Session = Depends(get_session)):
     policies = session.exec(select(Insurance).where(Insurance.whatsapp_id == whatsapp_id)).all()
     return {"policies": policies}
+
+
+# --- ALL USERS (for Morning Briefing scheduler) ---
+
+@app.get("/users")
+def list_users(session: Session = Depends(get_session)):
+    users = session.exec(select(UserProfile)).all()
+    return {"users": users}
+
+
+# --- MORNING BRIEFING (on-demand or called by scheduler) ---
+
+@app.get("/briefing/{whatsapp_id}")
+def get_briefing(whatsapp_id: str, session: Session = Depends(get_session)):
+    from briefing import build_briefing_message
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == whatsapp_id)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    properties = session.exec(select(Property).where(Property.whatsapp_id == whatsapp_id)).all()
+    insurance  = session.exec(select(Insurance).where(Insurance.whatsapp_id == whatsapp_id)).all()
+
+    message = build_briefing_message(
+        user_name=user.full_name or "",
+        net_salary=user.net_salary,
+        total_debt=user.total_debt,
+        properties=[p.model_dump() for p in properties],
+        insurance_count=len(insurance),
+    )
+    return {"whatsapp_id": whatsapp_id, "message": message}

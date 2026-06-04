@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select, SQLModel
 from sqlalchemy.exc import IntegrityError, ProgrammingError
@@ -912,3 +912,21 @@ def credit_score_sim(req: CreditSimRequest, session: Session = Depends(get_sessi
         "best_scenario": report.best_scenario.label if report.best_scenario else None,
         "whatsapp_message": format_credit_sim_message(report, user_name=user.full_name or ""),
     }
+
+
+# --- EVOLUTION API WEBHOOK (direct — no Make.com or Windmill needed) ---
+
+@app.post("/webhook")
+async def evolution_webhook(request: Request):
+    """
+    Receives Evolution API webhook payloads directly.
+    Set your Evolution API webhook URL to: https://bankbook.onrender.com/webhook
+    Enable event: MESSAGES_UPSERT
+    """
+    from webhook_handler import handle_webhook
+    try:
+        body = await request.json()
+    except Exception:
+        return {"status": "invalid_json"}
+    result = handle_webhook(body)
+    return result

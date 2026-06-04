@@ -6,7 +6,7 @@ from sqlmodel import Session, select, SQLModel
 from typing import Optional
 
 from database import engine, get_session
-from models import UserProfile, Property, Insurance
+from models import UserProfile, Property, Insurance, Reward
 from calculations import calculate_affordability, insurance_savings_estimate
 from anomaly import detect_anomalies, format_anomaly_alert
 from simulator import simulate_payoffs, format_simulator_message
@@ -263,3 +263,74 @@ def pre_approval_simulator(req: SimulatorRequest, session: Session = Depends(get
     )
     result["whatsapp_message"] = format_simulator_message(result, user_name=user.full_name or "")
     return result
+
+
+# --- REWARDS TRACKER ---
+
+class RewardsRequest(BaseModel):
+    whatsapp_id: str
+    rewards: list[dict]  # [{"program": "eBucks", "balance": 5000, "expiry_date": "2025-06-30"}]
+
+@app.post("/rewards")
+def upsert_rewards(req: RewardsRequest, session: Session = Depends(get_session)):
+    from datetime import date as date_type
+    from rewards import evaluate_rewards, format_rewards_message
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == req.whatsapp_id)).first()
+    if not user:
+        user = UserProfile(whatsapp_id=req.whatsapp_id, net_salary=0.0, total_debt=0.0)
+        session.add(user)
+        session.commit()
+
+    from datetime import datetime as dt_type
+    for r in req.rewards:
+        program = r.get("program", "")
+        balance = float(r.get("balance", 0))
+        exp_str = r.get("expiry_date")
+        expiry  = date_type.fromisoformat(exp_str) if exp_str else None
+
+        existing = session.exec(
+            select(Reward).where(Reward.whatsapp_id == req.whatsapp_id, Reward.program == program)
+        ).first()
+
+        if existing:
+            existing.balance      = balance
+            existing.expiry_date  = expiry
+            existing.updated_at   = dt_type.utcnow()
+        else:
+            session.add(Reward(whatsapp_id=req.whatsapp_id, program=program, balance=balance, expiry_date=expiry))
+
+    session.commit()
+
+    saved = session.exec(select(Reward).where(Reward.whatsapp_id == req.whatsapp_id)).all()
+    report = evaluate_rewards(req.whatsapp_id, [
+        {"program": rw.program, "balance": rw.balance,
+         "expiry_date": rw.expiry_date.isoformat() if rw.expiry_date else None}
+        for rw in saved
+    ])
+    return {
+        "status": "rewards_saved",
+        "total_rand_value": report.total_rand_value,
+        "urgent_programs": report.urgent_programs,
+        "whatsapp_message": format_rewards_message(report, user_name=user.full_name or ""),
+    }
+
+
+@app.get("/rewards/{whatsapp_id}")
+def get_rewards(whatsapp_id: str, session: Session = Depends(get_session)):
+    from rewards import evaluate_rewards, format_rewards_message
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == whatsapp_id)).first()
+    saved = session.exec(select(Reward).where(Reward.whatsapp_id == whatsapp_id)).all()
+
+    report = evaluate_rewards(whatsapp_id, [
+        {"program": rw.program, "balance": rw.balance,
+         "expiry_date": rw.expiry_date.isoformat() if rw.expiry_date else None}
+        for rw in saved
+    ])
+    return {
+        "rewards": [{"program": rw.program, "balance": rw.balance, "expiry_date": str(rw.expiry_date)} for rw in saved],
+        "total_rand_value": report.total_rand_value,
+        "urgent_programs": report.urgent_programs,
+        "whatsapp_message": format_rewards_message(report, user_name=(user.full_name or "") if user else ""),
+    }

@@ -867,3 +867,48 @@ def get_net_worth(whatsapp_id: str, session: Session = Depends(get_session)):
         "goals": report.goals,
         "whatsapp_message": format_net_worth_message(report, user_name=user.full_name or ""),
     }
+
+
+# --- CREDIT SCORE SIMULATOR ---
+
+class CreditSimRequest(BaseModel):
+    whatsapp_id: str
+    debts_to_simulate: list[dict]  # [{"label": "Car loan", "monthly_amount": 3500, "lump_sum": 85000}]
+
+@app.post("/credit-score-sim")
+def credit_score_sim(req: CreditSimRequest, session: Session = Depends(get_session)):
+    from creditscore import simulate_credit_score, format_credit_sim_message
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == req.whatsapp_id)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Please set up your BankBook profile first.")
+    if user.net_salary == 0:
+        raise HTTPException(status_code=400, detail="Salary not set. Please update your profile first.")
+
+    report = simulate_credit_score(
+        net_salary=user.net_salary,
+        total_debt=user.total_debt,
+        debts_to_simulate=req.debts_to_simulate,
+    )
+
+    scenarios_out = [
+        {
+            "label": s.label,
+            "monthly_reduction": s.monthly_reduction,
+            "new_score": s.new_score,
+            "score_change": s.score_change,
+            "new_band": s.new_band,
+            "new_dti": s.new_dti,
+            "breakeven_months": s.breakeven_months,
+        }
+        for s in report.scenarios
+    ]
+
+    return {
+        "current_score": report.current_score,
+        "current_dti": report.current_dti,
+        "current_band": report.current_band,
+        "scenarios": scenarios_out,
+        "best_scenario": report.best_scenario.label if report.best_scenario else None,
+        "whatsapp_message": format_credit_sim_message(report, user_name=user.full_name or ""),
+    }

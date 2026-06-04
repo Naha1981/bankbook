@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError, ProgrammingError
 from typing import Optional
 
 from database import engine, get_session
-from models import UserProfile, Property, Insurance, Reward, TaxRecord, BankBalance, DebitOrderRecord, SpendEntry
+from models import UserProfile, Property, Insurance, Reward, TaxRecord, BankBalance, DebitOrderRecord, SpendEntry, SavingsGoal, GoalDeposit
 from calculations import calculate_affordability, insurance_savings_estimate
 from anomaly import detect_anomalies, format_anomaly_alert
 from simulator import simulate_payoffs, format_simulator_message
@@ -653,3 +653,166 @@ def budget_summary(whatsapp_id: str, session: Session = Depends(get_session)):
         "over_budget": summary.over_budget,
         "whatsapp_message": format_budget_summary(summary),
     }
+
+
+# --- GOAL TRACKER ---
+
+class GoalRequest(BaseModel):
+    whatsapp_id: str
+    label: str                        # "Car", "Holiday", "Emergency Fund"
+    target_amount: float
+    deadline: Optional[str] = None    # ISO date string "2026-12-31" or None
+
+class GoalDepositRequest(BaseModel):
+    whatsapp_id: str
+    goal_id: int
+    amount: float
+    note: Optional[str] = None
+
+class GoalCompleteRequest(BaseModel):
+    whatsapp_id: str
+    goal_id: int
+
+
+@app.post("/goal")
+def create_goal(req: GoalRequest, session: Session = Depends(get_session)):
+    from goals import evaluate_goal, format_goal_message
+    from datetime import date as date_type, datetime as dt_type
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == req.whatsapp_id)).first()
+    if not user:
+        user = UserProfile(whatsapp_id=req.whatsapp_id, net_salary=0.0, total_debt=0.0)
+        session.add(user)
+        session.commit()
+
+    deadline = date_type.fromisoformat(req.deadline) if req.deadline else None
+
+    goal = SavingsGoal(
+        whatsapp_id=req.whatsapp_id,
+        label=req.label,
+        target_amount=req.target_amount,
+        current_saved=0.0,
+        deadline=deadline,
+    )
+    session.add(goal)
+    session.commit()
+    session.refresh(goal)
+
+    progress = evaluate_goal(
+        goal_id=goal.id,
+        label=goal.label,
+        target_amount=goal.target_amount,
+        current_saved=goal.current_saved,
+        deadline=goal.deadline,
+        created_at=goal.created_at,
+    )
+
+    return {
+        "status": "goal_created",
+        "goal_id": goal.id,
+        "label": goal.label,
+        "target_amount": goal.target_amount,
+        "monthly_needed": progress.monthly_needed,
+        "months_remaining": progress.months_remaining,
+        "whatsapp_message": format_goal_message(progress, user_name=user.full_name or ""),
+    }
+
+
+@app.post("/goal/deposit")
+def log_goal_deposit(req: GoalDepositRequest, session: Session = Depends(get_session)):
+    from goals import evaluate_goal, format_goal_message
+    from datetime import datetime as dt_type
+
+    goal = session.exec(select(SavingsGoal).where(SavingsGoal.id == req.goal_id, SavingsGoal.whatsapp_id == req.whatsapp_id)).first()
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found.")
+
+    deposit = GoalDeposit(
+        goal_id=req.goal_id,
+        whatsapp_id=req.whatsapp_id,
+        amount=req.amount,
+        note=req.note,
+    )
+    session.add(deposit)
+
+    goal.current_saved += req.amount
+    goal.updated_at = dt_type.utcnow()
+    session.commit()
+    session.refresh(goal)
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == req.whatsapp_id)).first()
+
+    progress = evaluate_goal(
+        goal_id=goal.id,
+        label=goal.label,
+        target_amount=goal.target_amount,
+        current_saved=goal.current_saved,
+        deadline=goal.deadline,
+        created_at=goal.created_at,
+    )
+
+    return {
+        "status": "deposit_logged",
+        "goal_id": goal.id,
+        "amount_added": req.amount,
+        "current_saved": goal.current_saved,
+        "remaining": progress.remaining,
+        "percent_complete": progress.percent_complete,
+        "whatsapp_message": format_goal_message(progress, user_name=(user.full_name or "") if user else ""),
+    }
+
+
+@app.get("/goal/{whatsapp_id}")
+def get_goals(whatsapp_id: str, session: Session = Depends(get_session)):
+    from goals import evaluate_goal, format_goals_summary
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == whatsapp_id)).first()
+    goals = session.exec(select(SavingsGoal).where(SavingsGoal.whatsapp_id == whatsapp_id, SavingsGoal.is_active == True)).all()
+
+    goal_list = []
+    for g in goals:
+        p = evaluate_goal(
+            goal_id=g.id,
+            label=g.label,
+            target_amount=g.target_amount,
+            current_saved=g.current_saved,
+            deadline=g.deadline,
+            created_at=g.created_at,
+        )
+        goal_list.append({
+            "goal_id": g.id,
+            "label": g.label,
+            "target_amount": g.target_amount,
+            "current_saved": g.current_saved,
+            "remaining": p.remaining,
+            "percent_complete": p.percent_complete,
+            "monthly_needed": p.monthly_needed,
+            "months_remaining": p.months_remaining,
+            "status": p.status,
+            "deadline": g.deadline.isoformat() if g.deadline else None,
+        })
+
+    return {
+        "goals": goal_list,
+        "active_count": len(goal_list),
+        "whatsapp_message": format_goals_summary(goal_list, user_name=(user.full_name or "") if user else ""),
+    }
+
+
+@app.post("/goal/complete")
+def complete_goal(req: GoalCompleteRequest, session: Session = Depends(get_session)):
+    goal = session.exec(select(SavingsGoal).where(SavingsGoal.id == req.goal_id, SavingsGoal.whatsapp_id == req.whatsapp_id)).first()
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found.")
+
+    goal.is_active = False
+    session.commit()
+
+    msg = (
+        f"🏦 *BankBook*\n\n"
+        f"🏆 Goal *{goal.label}* marked as complete!\n"
+        f"You saved R{goal.current_saved:,.0f} towards R{goal.target_amount:,.0f}.\n\n"
+        f"Set a new goal anytime — reply:\n"
+        f"_Goal: Save R[amount] for [name] by [month year]_"
+    )
+    return {"status": "goal_completed", "goal_id": goal.id, "whatsapp_message": msg}

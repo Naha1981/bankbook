@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from sqlmodel import Session, select, SQLModel
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 from typing import Optional
 
 from database import engine, get_session
@@ -15,7 +16,11 @@ from simulator import simulate_payoffs, format_simulator_message
 # --- LIFESPAN (replaces deprecated @app.on_event) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    SQLModel.metadata.create_all(engine)
+    try:
+        SQLModel.metadata.create_all(engine)
+    except (IntegrityError, ProgrammingError):
+        # Catches race condition when multiple Gunicorn workers try to create tables simultaneously
+        pass
     yield
 
 

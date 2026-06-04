@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: bankbook-brain
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        sync: false

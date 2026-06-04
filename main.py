@@ -6,7 +6,7 @@ from sqlmodel import Session, select, SQLModel
 from typing import Optional
 
 from database import engine, get_session
-from models import UserProfile, Property, Insurance, Reward, TaxRecord
+from models import UserProfile, Property, Insurance, Reward, TaxRecord, BankBalance, DebitOrderRecord
 from calculations import calculate_affordability, insurance_savings_estimate
 from anomaly import detect_anomalies, format_anomaly_alert
 from simulator import simulate_payoffs, format_simulator_message
@@ -431,3 +431,144 @@ def get_tax_envelope(whatsapp_id: str, session: Session = Depends(get_session)):
         "income_type": record.income_type,
         "whatsapp_message": format_tax_message(envelope, user_name=(user.full_name or "") if user else "", income_type=record.income_type),
     }
+
+
+# --- SAFE-TO-SPEND ---
+
+class BalanceRequest(BaseModel):
+    whatsapp_id: str
+    balance: float
+
+class DebitRequest(BaseModel):
+    whatsapp_id: str
+    description: str
+    amount: float
+    due_day: int = 1
+
+class RemoveDebitRequest(BaseModel):
+    whatsapp_id: str
+    description: str
+
+@app.post("/safe-to-spend/balance")
+def update_balance(req: BalanceRequest, session: Session = Depends(get_session)):
+    from stitch import calculate_safe_to_spend, format_safe_to_spend_message
+    from datetime import datetime as dt_type
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == req.whatsapp_id)).first()
+    if not user:
+        user = UserProfile(whatsapp_id=req.whatsapp_id, net_salary=0.0, total_debt=0.0)
+        session.add(user)
+        session.commit()
+
+    existing = session.exec(select(BankBalance).where(BankBalance.whatsapp_id == req.whatsapp_id)).first()
+    if existing:
+        existing.balance    = req.balance
+        existing.updated_at = dt_type.utcnow()
+    else:
+        session.add(BankBalance(whatsapp_id=req.whatsapp_id, balance=req.balance, data_source="manual"))
+    session.commit()
+
+    debits = session.exec(
+        select(DebitOrderRecord).where(DebitOrderRecord.whatsapp_id == req.whatsapp_id, DebitOrderRecord.is_active == True)
+    ).all()
+    result = calculate_safe_to_spend(req.balance, [{"description": d.description, "amount": d.amount, "due_day": d.due_day} for d in debits])
+    result.data_source = "manual"
+    return {"status": "balance_updated", "whatsapp_message": format_safe_to_spend_message(result, user_name=user.full_name or "")}
+
+
+@app.post("/safe-to-spend/debit")
+def add_debit(req: DebitRequest, session: Session = Depends(get_session)):
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == req.whatsapp_id)).first()
+    if not user:
+        user = UserProfile(whatsapp_id=req.whatsapp_id, net_salary=0.0, total_debt=0.0)
+        session.add(user)
+        session.commit()
+
+    existing = session.exec(
+        select(DebitOrderRecord).where(
+            DebitOrderRecord.whatsapp_id == req.whatsapp_id,
+            DebitOrderRecord.description == req.description,
+        )
+    ).first()
+    if existing:
+        existing.amount  = req.amount
+        existing.due_day = req.due_day
+    else:
+        session.add(DebitOrderRecord(whatsapp_id=req.whatsapp_id, description=req.description, amount=req.amount, due_day=req.due_day))
+    session.commit()
+
+    all_debits = session.exec(
+        select(DebitOrderRecord).where(DebitOrderRecord.whatsapp_id == req.whatsapp_id, DebitOrderRecord.is_active == True)
+    ).all()
+    total = sum(d.amount for d in all_debits)
+    msg = (
+        f"🏦 *BankBook*\n\n"
+        f"✅ Debit order saved: *{req.description}* — R{req.amount:,.0f} on the {req.due_day}th\n\n"
+        f"You now have *{len(all_debits)} debit order{'s' if len(all_debits) > 1 else ''}* totalling *R{total:,.0f}/month*.\n\n"
+        f"Reply 'Safe to spend?' to see your updated balance."
+    )
+    return {"status": "debit_saved", "whatsapp_message": msg}
+
+
+@app.post("/safe-to-spend/debit/remove")
+def remove_debit(req: RemoveDebitRequest, session: Session = Depends(get_session)):
+    record = session.exec(
+        select(DebitOrderRecord).where(
+            DebitOrderRecord.whatsapp_id == req.whatsapp_id,
+            DebitOrderRecord.description.ilike(f"%{req.description}%"),
+        )
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail=f"No debit order matching '{req.description}' found.")
+    record.is_active = False
+    session.commit()
+    msg = f"🏦 *BankBook*\n\n✅ Debit order *{record.description}* (R{record.amount:,.0f}) removed from your BankBook."
+    return {"status": "debit_removed", "whatsapp_message": msg}
+
+
+@app.get("/safe-to-spend/{whatsapp_id}")
+def get_safe_to_spend(whatsapp_id: str, session: Session = Depends(get_session)):
+    from stitch import calculate_safe_to_spend, format_safe_to_spend_message, get_account_balances
+
+    user    = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == whatsapp_id)).first()
+    balance = session.exec(select(BankBalance).where(BankBalance.whatsapp_id == whatsapp_id)).first()
+    debits  = session.exec(
+        select(DebitOrderRecord).where(DebitOrderRecord.whatsapp_id == whatsapp_id, DebitOrderRecord.is_active == True)
+    ).all()
+
+    if not balance:
+        raise HTTPException(status_code=404, detail="No balance on file.")
+
+    current_balance = balance.balance
+    source          = balance.data_source
+
+    # If Stitch token available, fetch live balance
+    if balance.stitch_user_token:
+        try:
+            accounts = get_account_balances(balance.stitch_user_token)
+            if accounts:
+                current_balance = sum(a["available_balance"] for a in accounts)
+                source = "stitch"
+        except Exception:
+            pass  # Fall back to stored balance
+
+    result = calculate_safe_to_spend(
+        current_balance,
+        [{"description": d.description, "amount": d.amount, "due_day": d.due_day} for d in debits],
+    )
+    result.data_source = source
+    return {
+        "safe_to_spend": result.safe_to_spend,
+        "bank_balance":  result.bank_balance,
+        "upcoming_debits": result.total_upcoming_debits,
+        "whatsapp_message": format_safe_to_spend_message(result, user_name=(user.full_name or "") if user else ""),
+    }
+
+
+@app.get("/safe-to-spend/stitch-link")
+def stitch_link(whatsapp_id: str, redirect_uri: str):
+    from stitch import build_stitch_link_url, STITCH_CLIENT_ID
+    if not STITCH_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Stitch integration not configured.")
+    link_url = build_stitch_link_url(redirect_uri=redirect_uri, state=whatsapp_id)
+    return {"link_url": link_url, "whatsapp_id": whatsapp_id}

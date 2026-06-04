@@ -8,6 +8,7 @@ from typing import Optional
 from database import engine, get_session
 from models import UserProfile, Property, Insurance
 from calculations import calculate_affordability, insurance_savings_estimate
+from anomaly import detect_anomalies, format_anomaly_alert
 
 
 # --- LIFESPAN (replaces deprecated @app.on_event) ---
@@ -206,3 +207,35 @@ def get_briefing(whatsapp_id: str, session: Session = Depends(get_session)):
         insurance_count=len(insurance),
     )
     return {"whatsapp_id": whatsapp_id, "message": message}
+
+
+# --- ANOMALY CHECK ---
+
+@app.get("/anomaly-check/{whatsapp_id}")
+def anomaly_check(whatsapp_id: str, session: Session = Depends(get_session)):
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == whatsapp_id)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    properties = session.exec(select(Property).where(Property.whatsapp_id == whatsapp_id)).all()
+    insurance  = session.exec(select(Insurance).where(Insurance.whatsapp_id == whatsapp_id)).all()
+
+    report = detect_anomalies(
+        whatsapp_id=whatsapp_id,
+        net_salary=user.net_salary,
+        total_debt=user.total_debt,
+        properties=[p.model_dump() for p in properties],
+        insurance_count=len(insurance),
+    )
+    message = format_anomaly_alert(report, user_name=user.full_name or "")
+
+    return {
+        "whatsapp_id": whatsapp_id,
+        "anomaly_count": len(report.anomalies),
+        "critical_count": report.critical_count,
+        "anomalies": [
+            {"code": a.code, "severity": a.severity, "message": a.message, "action": a.action}
+            for a in report.anomalies
+        ],
+        "whatsapp_message": message,
+    }

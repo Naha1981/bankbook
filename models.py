@@ -47,6 +47,18 @@ class Reward(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class SpendEntry(SQLModel, table=True):
+    __tablename__ = "bankbook_spend"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    whatsapp_id: str = Field(foreign_key="bankbook_profiles.whatsapp_id")
+    description: str
+    amount: float
+    category: str = "Other"
+    entry_date: date = Field(default_factory=date.today)
+    raw_text: str = ""
+
+
 class BankBalance(SQLModel, table=True):
     __tablename__ = "bankbook_balances"
 

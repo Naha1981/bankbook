@@ -100,3 +100,28 @@ class TaxRecord(SQLModel, table=True):
     provisional_period_1: float = 0.0
     provisional_period_2: float = 0.0
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SavingsGoal(SQLModel, table=True):
+    __tablename__ = "bankbook_goals"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    whatsapp_id: str = Field(foreign_key="bankbook_profiles.whatsapp_id")
+    label: str                           # e.g. "Car", "Holiday", "Emergency Fund"
+    target_amount: float
+    current_saved: float = Field(default=0.0)
+    deadline: Optional[date] = None      # Target date to reach the goal
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class GoalDeposit(SQLModel, table=True):
+    __tablename__ = "bankbook_goal_deposits"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    goal_id: int = Field(foreign_key="bankbook_goals.id")
+    whatsapp_id: str = Field(foreign_key="bankbook_profiles.whatsapp_id")
+    amount: float
+    note: Optional[str] = None
+    deposit_date: date = Field(default_factory=date.today)

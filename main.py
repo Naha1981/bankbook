@@ -9,6 +9,7 @@ from database import engine, get_session
 from models import UserProfile, Property, Insurance
 from calculations import calculate_affordability, insurance_savings_estimate
 from anomaly import detect_anomalies, format_anomaly_alert
+from simulator import simulate_payoffs, format_simulator_message
 
 
 # --- LIFESPAN (replaces deprecated @app.on_event) ---
@@ -239,3 +240,26 @@ def anomaly_check(whatsapp_id: str, session: Session = Depends(get_session)):
         ],
         "whatsapp_message": message,
     }
+
+
+# --- PRE-APPROVAL SIMULATOR ---
+
+class SimulatorRequest(BaseModel):
+    whatsapp_id: str
+    debts_to_simulate: list[dict]  # [{"label": "Car loan", "monthly_amount": 5000}]
+
+@app.post("/pre-approval-simulator")
+def pre_approval_simulator(req: SimulatorRequest, session: Session = Depends(get_session)):
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == req.whatsapp_id)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Please set up your BankBook profile first.")
+    if user.net_salary == 0:
+        raise HTTPException(status_code=400, detail="Salary not set. Please update your profile first.")
+
+    result = simulate_payoffs(
+        net_salary=user.net_salary,
+        total_debt=user.total_debt,
+        debts_to_simulate=req.debts_to_simulate,
+    )
+    result["whatsapp_message"] = format_simulator_message(result, user_name=user.full_name or "")
+    return result

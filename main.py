@@ -816,3 +816,54 @@ def complete_goal(req: GoalCompleteRequest, session: Session = Depends(get_sessi
         f"_Goal: Save R[amount] for [name] by [month year]_"
     )
     return {"status": "goal_completed", "goal_id": goal.id, "whatsapp_message": msg}
+
+
+# --- NET WORTH SNAPSHOT ---
+
+@app.get("/net-worth/{whatsapp_id}")
+def get_net_worth(whatsapp_id: str, session: Session = Depends(get_session)):
+    from networth import calculate_net_worth, format_net_worth_message
+    from rewards import evaluate_rewards
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == whatsapp_id)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Please set up your BankBook profile first.")
+
+    # Gather all data in parallel-friendly queries
+    properties = session.exec(select(Property).where(Property.whatsapp_id == whatsapp_id)).all()
+    goals      = session.exec(select(SavingsGoal).where(SavingsGoal.whatsapp_id == whatsapp_id, SavingsGoal.is_active == True)).all()
+    balance    = session.exec(select(BankBalance).where(BankBalance.whatsapp_id == whatsapp_id)).first()
+    rewards    = session.exec(select(Reward).where(Reward.whatsapp_id == whatsapp_id)).all()
+
+    # Convert rewards to rand value
+    rewards_rand = 0.0
+    if rewards:
+        rewards_data = [
+            {"program": r.program, "balance": r.balance,
+             "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None}
+            for r in rewards
+        ]
+        rewards_report = evaluate_rewards(whatsapp_id, rewards_data)
+        rewards_rand = rewards_report.total_rand_value
+
+    report = calculate_net_worth(
+        net_salary=user.net_salary,
+        total_debt=user.total_debt,
+        properties=[p.model_dump() for p in properties],
+        goals=[{"label": g.label, "current_saved": g.current_saved} for g in goals],
+        bank_balance=balance.balance if balance else 0.0,
+        rewards_rand_value=rewards_rand,
+    )
+
+    return {
+        "net_worth": report.net_worth,
+        "net_worth_liquid": report.net_worth_excl_property,
+        "property_equity": report.property_equity,
+        "bank_balance": report.bank_balance,
+        "savings_goals_total": report.savings_goals_total,
+        "rewards_rand_value": report.rewards_rand_value,
+        "monthly_debt_obligations": report.monthly_debt_obligations,
+        "properties": report.properties,
+        "goals": report.goals,
+        "whatsapp_message": format_net_worth_message(report, user_name=user.full_name or ""),
+    }

@@ -6,7 +6,7 @@ from sqlmodel import Session, select, SQLModel
 from typing import Optional
 
 from database import engine, get_session
-from models import UserProfile, Property, Insurance, Reward, TaxRecord, BankBalance, DebitOrderRecord
+from models import UserProfile, Property, Insurance, Reward, TaxRecord, BankBalance, DebitOrderRecord, SpendEntry
 from calculations import calculate_affordability, insurance_savings_estimate
 from anomaly import detect_anomalies, format_anomaly_alert
 from simulator import simulate_payoffs, format_simulator_message
@@ -572,3 +572,79 @@ def stitch_link(whatsapp_id: str, redirect_uri: str):
         raise HTTPException(status_code=503, detail="Stitch integration not configured.")
     link_url = build_stitch_link_url(redirect_uri=redirect_uri, state=whatsapp_id)
     return {"link_url": link_url, "whatsapp_id": whatsapp_id}
+
+
+# --- BUDGET COACH ---
+
+class BudgetLogRequest(BaseModel):
+    whatsapp_id: str
+    text: str
+
+@app.post("/budget/log")
+def log_spend(req: BudgetLogRequest, session: Session = Depends(get_session)):
+    from budget import parse_spend_message, categorise, format_spend_confirm
+    from datetime import date as date_type
+
+    parsed = parse_spend_message(req.text)
+    if not parsed:
+        return {"status": "parse_failed"}
+
+    user = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == req.whatsapp_id)).first()
+    if not user:
+        user = UserProfile(whatsapp_id=req.whatsapp_id, net_salary=0.0, total_debt=0.0)
+        session.add(user)
+        session.commit()
+
+    category = categorise(parsed["description"])
+    entry = SpendEntry(
+        whatsapp_id=req.whatsapp_id,
+        description=parsed["description"],
+        amount=parsed["amount"],
+        category=category,
+        entry_date=date_type.today(),
+        raw_text=req.text,
+    )
+    session.add(entry)
+    session.commit()
+
+    return {
+        "status": "logged",
+        "amount": parsed["amount"],
+        "description": parsed["description"],
+        "category": category,
+        "whatsapp_message": format_spend_confirm(parsed["description"], parsed["amount"], category),
+    }
+
+
+@app.get("/budget/summary/{whatsapp_id}")
+def budget_summary(whatsapp_id: str, session: Session = Depends(get_session)):
+    from budget import build_budget_summary, format_budget_summary
+    from datetime import date as date_type
+
+    user  = session.exec(select(UserProfile).where(UserProfile.whatsapp_id == whatsapp_id)).first()
+    today = date_type.today()
+    month_start = date_type(today.year, today.month, 1)
+
+    entries = session.exec(
+        select(SpendEntry).where(
+            SpendEntry.whatsapp_id == whatsapp_id,
+            SpendEntry.entry_date >= month_start,
+        )
+    ).all()
+
+    if not entries:
+        raise HTTPException(status_code=404, detail="No spending logged this month.")
+
+    month_label = today.strftime("%B %Y")
+    summary = build_budget_summary(
+        entries=[{"category": e.category, "amount": e.amount} for e in entries],
+        net_salary=user.net_salary if user else 0.0,
+        month_label=month_label,
+    )
+    return {
+        "month": month_label,
+        "total_spent": summary.total_spent,
+        "by_category": summary.by_category,
+        "over_budget": summary.over_budget,
+        "whatsapp_message": format_budget_summary(summary),
+    }

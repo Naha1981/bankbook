@@ -9,9 +9,13 @@ from typing import Optional
 from database import engine, get_session
 from models import UserProfile, Property, Insurance, Reward, TaxRecord, BankBalance, DebitOrderRecord, SpendEntry, SavingsGoal, GoalDeposit
 from calculations import calculate_affordability, insurance_savings_estimate
+from nahatax_api import router as nahatax_router
+import nahatax_models  # noqa: F401 — registers NahaTax SQLModel tables before create_all
 from anomaly import detect_anomalies, format_anomaly_alert
 from simulator import simulate_payoffs, format_simulator_message
 
+
+app_compat_note = "BankBook APIs remain available; NahaTax is the new practice/compliance layer."
 
 # --- LIFESPAN (replaces deprecated @app.on_event) ---
 @asynccontextmanager
@@ -27,9 +31,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="BankBook AI OS",
     description="South Africa's AI Financial Operating System — Property, Insurance & Bond Calculations",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
+
+app.include_router(nahatax_router)
 
 
 # --- REQUEST/RESPONSE MODELS ---

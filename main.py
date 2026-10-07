@@ -1,6 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlmodel import Session, select, SQLModel
 from sqlalchemy.exc import IntegrityError, ProgrammingError
@@ -36,6 +37,7 @@ app = FastAPI(
 )
 
 app.include_router(nahatax_router)
+app.mount('/nahatax', StaticFiles(directory='static/nahatax', html=True), name='nahatax-ui')
 
 
 # --- REQUEST/RESPONSE MODELS ---

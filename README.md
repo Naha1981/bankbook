@@ -1,59 +1,95 @@
-# BankBook AI OS — Brain (Backend)
+# NahaTax Intelligence — BankBook Core
 
-South Africa's AI Financial Operating System. Runs on WhatsApp via Evolution API.
+NahaTax is the accountant/practice product built on the existing BankBook repository.
 
-## Features
+Repository: Naha1981/bankbook
 
-- **Bond Affordability Calculator** — SA Prime Rate (11.75%), 20-year term, 30% income rule
-- **User Profile Management** — Salary, debt, and financial snapshot per WhatsApp number
-- **Property Vault** — Track properties, bond balances, and home equity
-- **Insurance Tracker** — Log policies, premiums, and get savings estimates
+## What changed
 
-## Stack
+BankBook's existing South African financial infrastructure remains in place. NahaTax adds a separate practice/compliance domain under /api/v1/nahatax.
 
-- **Language:** Python 3.11
-- **Framework:** FastAPI
-- **Database:** PostgreSQL (Neon recommended)
-- **ORM:** SQLModel (SQLAlchemy + Pydantic)
-- **Server:** Gunicorn + Uvicorn workers
+First workflow: VAT readiness.
 
-## Local Setup
+Client → Documents + requirements → Evidence ledger → Deterministic checks + AI work → Exceptions → Accountant review → Approval/request information → Action receipt + audit trail → SARS adapter boundary
 
-```bash
-cp .env.example .env
-# Add your Neon DATABASE_URL to .env
+## NahaTax foundations
+
+- Practice and client model
+- VAT engagements and obligations
+- Client document requirements
+- Document intake metadata
+- Evidence ledger with provenance and fact-state
+- Exceptions with confidence and amount-at-risk
+- AI employee work queue
+- Human approval decisions
+- Action receipts
+- Audit events
+- SARS sandbox submission boundary
+- Synthetic demo-data seed
+- Client readiness scoring
+
+## API
+
+NahaTax endpoints are namespaced so the original BankBook APIs remain available.
+
+| Endpoint | Purpose |
+|---|---|
+| GET /api/v1/nahatax/health | NahaTax health and SARS mode |
+| POST /api/v1/nahatax/demo/seed | Create synthetic practice data |
+| GET /api/v1/nahatax/overview | Practice-level readiness summary |
+| GET /api/v1/nahatax/clients | Client list |
+| GET /api/v1/nahatax/clients/{id} | Client and readiness |
+| POST /api/v1/nahatax/clients | Create client |
+| POST /api/v1/nahatax/clients/{id}/requirements | Add missing-document requirement |
+| POST /api/v1/nahatax/clients/{id}/documents | Record received document |
+| GET /api/v1/nahatax/clients/{id}/evidence | Evidence ledger |
+| GET /api/v1/nahatax/work | AI employee work queue |
+| GET /api/v1/nahatax/exceptions | Review exceptions |
+| POST /api/v1/nahatax/exceptions/{id}/decision | Approve/reject/request information |
+| GET /api/v1/nahatax/audit | Audit trail |
+| GET /api/v1/nahatax/receipts | Action receipts |
+| GET /api/v1/nahatax/employees | AI employee catalogue |
+| GET /api/v1/nahatax/sars/status | SARS adapter status |
+| POST /api/v1/nahatax/sars/sandbox/prepare | Prepare a non-live SARS payload |
+
+Use the optional X-Practice-Id header to select a practice in the current MVP.
+
+## Important boundary
+
+The SARS adapter is sandbox-only. It cannot claim to have submitted anything to SARS. Production integration will be implemented only after the correct SARS-authorised access channel, credentials, testing and security controls are in place.
+
+## NahaLabs architecture
+
+This repository is the domain application. Shared NahaLabs infrastructure stays outside it:
+
+- NahaLLM — model/provider routing
+- NahaDecision — typed decisions and probabilities
+- my-own-whatsapp — messaging transport boundary
+- Docling-compatible ingestion — document-to-structure
+- NahaLabs Evidence Layer — provenance, temporal facts and review
+- Agent Workforce Runtime — persistent AI employee execution
+- Jev — controlled browser execution
+- SARS Adapter — controlled external submission boundary
+
+The product moat is not the underlying model or OSS. It is the accumulated NahaTax evidence, decision, review, workflow and outcome history.
+
+## Run locally
 
 pip install -r requirements.txt
+export DATABASE_URL="postgresql://..."
 uvicorn main:app --reload
-```
 
-API docs available at `http://localhost:8000/docs`
+The existing BankBook personal-finance endpoints remain available.
 
-## Deploy to Render
+## Roadmap
 
-1. Push this repo to GitHub
-2. Go to [render.com](https://render.com) → New → Blueprint
-3. Connect your GitHub repo
-4. Add `DATABASE_URL` as an environment variable (your Neon connection string)
-5. Deploy
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Health check |
-| POST | `/profile` | Create or update user profile |
-| GET | `/profile/{whatsapp_id}` | Get user profile |
-| POST | `/calculate-affordability` | Bond affordability calculation |
-| POST | `/property` | Add a property |
-| GET | `/properties/{whatsapp_id}` | List user's properties |
-| POST | `/insurance` | Add an insurance policy |
-| GET | `/insurance/{whatsapp_id}` | List user's insurance policies |
-
-## Windmill / Automation Integration
-
-Point your Windmill webhook flow at:
-- `POST /profile` — when user shares salary
-- `POST /calculate-affordability` — when user asks "can I afford this house?"
-
-See `/docs` for full request/response schemas.
+1. Practice authentication and tenant isolation
+2. Real document upload/storage + SHA-256 evidence hashes
+3. Docling extraction pipeline
+4. NahaLLM adapter
+5. VAT reconciliation engine
+6. Client WhatsApp transport
+7. Deadline/compliance scheduler
+8. Accountant review pack
+9. Accounting-platform adapters
+10. SARS-authorised production adapter

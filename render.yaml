@@ -2,8 +2,19 @@ services:
   - type: web
     name: bankbook-brain
     env: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /docs
     envVars:
+      - key: PORT
+        value: "8000"
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: bankbook-db
+          property: connectionString
+
+databases:
+  - name: bankbook-db
+    plan: free
+    databaseName: bankbook
+    user: bankbook
